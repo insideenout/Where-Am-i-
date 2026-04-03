@@ -38,6 +38,11 @@ type RadarSettings = {
   circleCount: number;
 };
 
+const isBluetoothSupported = 'bluetooth' in navigator || (window as any).ble || (window as any).Capacitor?.Plugins?.BluetoothLe;
+const isNfcSupported = 'NDEFReader' in window || (window as any).nfc;
+const isCordova = !!(window as any).cordova;
+const isCapacitor = !!(window as any).Capacitor;
+
 const WelcomeScreen = ({ onStart, onNfcStart, onSmartThingsStart, isScanning, error, nfcStatus, savedDevices, manualSavedDevices, onConnectSaved, onConnectManual, customNames }: { onStart: (type: FilterType, nfcData?: string) => void, onNfcStart: () => void, onSmartThingsStart: () => void, isScanning: boolean, error: string, nfcStatus: string, savedDevices: any[], manualSavedDevices: any[], onConnectSaved: (device: any) => void, onConnectManual: (deviceData: any) => void, customNames: Record<string, string> }) => {
   const [showHelp, setShowHelp] = useState(false);
 
@@ -46,10 +51,25 @@ const WelcomeScreen = ({ onStart, onNfcStart, onSmartThingsStart, isScanning, er
     <div className="w-24 h-24 bg-blue-500/20 text-blue-400 rounded-full flex items-center justify-center mb-4 shadow-[0_0_30px_rgba(59,130,246,0.3)] shrink-0">
       <Bluetooth size={48} />
     </div>
-    <h1 className="text-3xl font-bold text-white tracking-tight">Where am i?</h1>
+    <div className="flex flex-col items-center">
+      <h1 className="text-3xl font-bold text-white tracking-tight">Where am i?</h1>
+      {isCordova && <span className="text-[10px] uppercase tracking-widest text-blue-400 font-bold mt-1 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">Cordova Mode</span>}
+      {isCapacitor && <span className="text-[10px] uppercase tracking-widest text-emerald-400 font-bold mt-1 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">Capacitor Mode</span>}
+    </div>
     <p className="text-slate-400 text-lg">
       Locate lost trackers and BLE devices using proximity radar and AR.
     </p>
+
+    {!isBluetoothSupported && (
+      <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 text-left flex items-start space-x-3 w-full shrink-0">
+        <AlertCircle className="text-red-500 shrink-0 mt-0.5" size={20} />
+        <div className="text-sm text-red-200">
+          <strong className="block mb-1">Unsupported Browser</strong>
+          <p>Your current browser (or APK wrapper) does not support Web Bluetooth. Please use <strong>Chrome on Android</strong> or <strong>Edge on Desktop</strong>.</p>
+          <p className="mt-2 text-xs opacity-70">Note: Standard Android WebViews used in many APK builders do not support Bluetooth.</p>
+        </div>
+      </div>
+    )}
     
     <button 
       onClick={() => setShowHelp(true)}
@@ -214,6 +234,11 @@ const WelcomeScreen = ({ onStart, onNfcStart, onSmartThingsStart, isScanning, er
             <div>
               <strong className="text-blue-400 block mb-1">4. Browser Support & Flags</strong>
               Web Bluetooth only works on Chrome, Edge, and Opera. It does NOT work on iOS Safari. If the radar doesn't update, you may need to enable <code>chrome://flags/#enable-experimental-web-platform-features</code> in your browser.
+            </div>
+            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+              <strong className="text-red-400 block mb-1">5. APK / WebView Issue</strong>
+              Standard Android APK wrappers (WebViews) do <strong>NOT</strong> support Bluetooth. 
+              <p className="mt-1">To use this as an app: Open the URL in <strong>Chrome for Android</strong>, tap the 3 dots (⋮), and select <strong>"Add to Home Screen"</strong>. This installs it as a PWA with full Bluetooth support.</p>
             </div>
           </div>
           
@@ -699,6 +724,16 @@ export default function App() {
   const [showRadarSettings, setShowRadarSettings] = useState(false);
   const lastSeenRef = useRef<number | null>(null);
   const [customNames, setCustomNames] = useState<Record<string, string>>({});
+  const [cordovaDevices, setCordovaDevices] = useState<any[]>([]);
+  const [showCordovaPicker, setShowCordovaPicker] = useState(false);
+
+  useEffect(() => {
+    if (isCordova) {
+      document.addEventListener('deviceready', () => {
+        console.log("Cordova is ready!");
+      }, false);
+    }
+  }, []);
 
   useEffect(() => {
     const stored = localStorage.getItem('customDeviceNames');
@@ -876,6 +911,32 @@ export default function App() {
   };
 
   const startNFCScan = async () => {
+    if (isCordova && (window as any).nfc) {
+      const nfc = (window as any).nfc;
+      setNfcStatus("Scanning for NFC tags... Hold device near tag.");
+      nfc.addNdefListener(
+        (event: any) => {
+          const tag = event.tag;
+          let text = "Tag found! ID: " + nfc.bytesToHexString(tag.id);
+          let extractedData = "";
+          if (tag.ndefMessage && tag.ndefMessage.length > 0) {
+            const record = tag.ndefMessage[0];
+            extractedData = nfc.decodeMessage([record]);
+            text += ` | Data: ${extractedData}`;
+          }
+          if (extractedData) {
+            setNfcStatus(`${text}. Initiating Bluetooth scan...`);
+            setTimeout(() => startScan('nfc', extractedData), 1500);
+          } else {
+            setNfcStatus(text);
+          }
+        },
+        () => console.log("NFC listener added"),
+        (err: any) => setError(`NFC Error: ${err}`)
+      );
+      return;
+    }
+
     if (!('NDEFReader' in window)) {
       setError("NFC is not supported on this device or browser. Try Chrome on Android.");
       return;
@@ -923,6 +984,105 @@ export default function App() {
   };
 
   const startScan = async (filterType: FilterType | 'nfc' | 'smartthings' = 'all', hintData?: string) => {
+    if (isCapacitor && (window as any).Capacitor?.Plugins?.BluetoothLe) {
+      const ble = (window as any).Capacitor.Plugins.BluetoothLe;
+      try {
+        setError('');
+        setIsScanning(true);
+        
+        // Ensure enabled
+        const enabled = await ble.isEnabled();
+        if (!enabled.value) {
+          await ble.enable();
+        }
+
+        // Request device (shows native picker)
+        const device = await ble.requestDevice({
+          services: [], // Scan for all
+        });
+
+        if (device) {
+          // Map Capacitor device to our internal format
+          const mappedDevice = {
+            id: device.deviceId,
+            name: device.name || 'Unknown Device',
+            gatt: {
+              connect: async () => {
+                await ble.connect({ deviceId: device.deviceId });
+                return {
+                  getPrimaryService: async (uuid: string) => ({
+                    getCharacteristic: async (charUuid: string) => ({
+                      readValue: async () => {
+                        const result = await ble.read({ deviceId: device.deviceId, service: uuid, characteristic: charUuid });
+                        return new Uint8Array(atob(result.value).split('').map(c => c.charCodeAt(0))).buffer;
+                      }
+                    })
+                  })
+                };
+              }
+            },
+            watchAdvertisements: async () => {
+              await ble.startScanning({
+                services: [],
+                allowDuplicates: true,
+              });
+              
+              // Listen for scan results
+              ble.addListener('onScanResult', (result: any) => {
+                if (result.device.deviceId === device.deviceId) {
+                  lastSeenRef.current = Date.now();
+                  setRssi(prev => {
+                    if (prev === null) return result.rssi;
+                    const diff = Math.abs(result.rssi - prev);
+                    const alpha = diff > 10 ? 0.8 : diff > 5 ? 0.4 : 0.15;
+                    return (result.rssi * alpha) + (prev * (1 - alpha));
+                  });
+                }
+              });
+            }
+          };
+          
+          setDevice(mappedDevice);
+          await (mappedDevice as any).watchAdvertisements();
+        }
+      } catch (err: any) {
+        setError(`Capacitor BLE Error: ${err.message || err}`);
+      } finally {
+        setIsScanning(false);
+      }
+      return;
+    }
+
+    if (isCordova && (window as any).ble) {
+      const ble = (window as any).ble;
+      setError('');
+      setIsScanning(true);
+      setCordovaDevices([]);
+      setShowCordovaPicker(true);
+
+      ble.startScan([], (device: any) => {
+        setCordovaDevices(prev => {
+          if (prev.find(d => d.id === device.id)) return prev;
+          // Apply basic filtering for Cordova
+          if (filterType === 'samsung' && !device.name?.toLowerCase().includes('samsung') && !device.name?.toLowerCase().includes('smarttag')) return prev;
+          if (filterType === 'apple' && !device.name?.toLowerCase().includes('apple')) return prev;
+          if (filterType === 'tile' && !device.name?.toLowerCase().includes('tile')) return prev;
+          
+          return [...prev, device];
+        });
+      }, (err: any) => {
+        setError(`Cordova BLE Error: ${err}`);
+        setIsScanning(false);
+      });
+
+      // Stop scan after 10 seconds
+      setTimeout(() => {
+        ble.stopScan();
+        setIsScanning(false);
+      }, 10000);
+      return;
+    }
+
     const nav = navigator as any;
     if (!nav.bluetooth) {
       setError("Web Bluetooth is not supported in this browser. If you are on iOS, Safari does NOT support Web Bluetooth (you must use a specialized app like WebBLE or Bluefy). On Android, use Chrome.");
@@ -1062,8 +1222,46 @@ export default function App() {
     }
   };
 
+  const connectToCordovaDevice = (device: any) => {
+    const ble = (window as any).ble;
+    setShowCordovaPicker(false);
+    setIsScanning(false);
+    setDevice(device);
+    
+    ble.connect(device.id, (connectedDevice: any) => {
+      setIsConnected(true);
+      // Start RSSI polling for Cordova
+      const rssiInterval = setInterval(() => {
+        ble.readRSSI(device.id, (rssi: number) => {
+          lastSeenRef.current = Date.now();
+          setRssi(prev => {
+            if (prev === null) return rssi;
+            const diff = Math.abs(rssi - prev);
+            const alpha = diff > 10 ? 0.8 : diff > 5 ? 0.4 : 0.15;
+            return (rssi * alpha) + (prev * (1 - alpha));
+          });
+          setRssiHistory(prev => {
+            const newHistory = [...prev, rssi];
+            if (newHistory.length > 20) newHistory.shift();
+            return newHistory;
+          });
+        }, (err: any) => console.warn("RSSI read failed", err));
+      }, 1000);
+
+      device._rssiInterval = rssiInterval;
+    }, (err: any) => {
+      setIsConnected(false);
+      setError(`Cordova Connection Error: ${err}`);
+      setDevice(null);
+      if (device._rssiInterval) clearInterval(device._rssiInterval);
+    });
+  };
+
   const disconnect = () => {
-    if (device && device.gatt && device.gatt.connected) {
+    if (isCordova && (window as any).ble && device) {
+      (window as any).ble.disconnect(device.id);
+      if (device._rssiInterval) clearInterval(device._rssiInterval);
+    } else if (device && device.gatt && device.gatt.connected) {
       device.gatt.disconnect();
     }
     setDevice(null);
@@ -1209,6 +1407,43 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col relative overflow-hidden">
+        {showCordovaPicker && (
+          <div className="fixed inset-0 z-[60] bg-slate-950 p-6 flex flex-col">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-bold text-white">Select Device</h2>
+              <button onClick={() => { setShowCordovaPicker(false); (window as any).ble?.stopScan(); }} className="p-2 text-slate-400 bg-slate-900 rounded-full">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+              {cordovaDevices.length === 0 && (
+                <div className="flex flex-col items-center justify-center h-40 text-slate-500">
+                  <motion.div animate={{ rotate: 360 }} transition={{ duration: 2, repeat: Infinity, ease: "linear" }}>
+                    <RadarIcon size={40} className="opacity-20" />
+                  </motion.div>
+                  <p className="mt-4">Scanning for nearby devices...</p>
+                </div>
+              )}
+              {cordovaDevices.map((dev, i) => (
+                <button
+                  key={i}
+                  onClick={() => connectToCordovaDevice(dev)}
+                  className="w-full flex items-center justify-between p-4 bg-slate-900 border border-slate-800 rounded-xl hover:bg-slate-800 transition-colors text-left"
+                >
+                  <div className="overflow-hidden">
+                    <p className="font-bold text-slate-100 truncate">{dev.name || 'Unknown Device'}</p>
+                    <p className="text-xs text-slate-500 font-mono mt-1">{dev.id}</p>
+                  </div>
+                  <div className="flex flex-col items-end shrink-0 ml-4">
+                    <span className="text-blue-400 font-bold">{dev.rssi} dBm</span>
+                    <span className="text-[10px] text-slate-600 uppercase tracking-tighter">Signal</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {!device && !stDevice ? (
           <WelcomeScreen 
             onStart={startScan} 
