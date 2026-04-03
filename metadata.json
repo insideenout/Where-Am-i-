@@ -1,0 +1,8 @@
+{
+  "name": "Where am i?",
+  "description": "Use Bluetooth Low Energy and your camera to find lost devices with proximity radar and AR overlays.",
+  "requestFramePermissions": [
+    "camera",
+    "bluetooth"
+  ]
+}
